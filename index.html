@@ -134,11 +134,12 @@ nav.scrolled{padding:.7rem 3rem;background:rgba(8,17,31,.96);border-bottom-color
 .carousel-stage{
   position:relative;
   width:100%;
-  height:520px;
+  height:560px; /* default, overridden by JS once images load */
   perspective:1200px;
   perspective-origin:50% 50%;
   z-index:2;
   overflow:visible;
+  transition:height 0.6s cubic-bezier(0.22,1,0.36,1);
 }
 
 /* ── TRACK: holds all cards, slides in 3D ── */
@@ -172,8 +173,8 @@ nav.scrolled{padding:.7rem 3rem;background:rgba(8,17,31,.96);border-bottom-color
 /* Photo inside card */
 .caro-img{
   width:100%;height:100%;
-  object-fit:cover;
-  object-position:center top;
+  object-fit:contain;
+  object-position:center center;
   display:block;
   transition:transform 8s ease;
   background:var(--navy-lt);
@@ -181,7 +182,7 @@ nav.scrolled{padding:.7rem 3rem;background:rgba(8,17,31,.96);border-bottom-color
   pointer-events:none;
 }
 .caro-card.is-active .caro-img{
-  transform:scale(1.04);
+  transform:scale(1.02);
 }
 
 /* Caption overlay — slides up on active */
@@ -920,7 +921,6 @@ document.querySelectorAll('.ic').forEach(c=>co.observe(c));
    Add as many as you like — the carousel adapts automatically.
 ══════════════════════════════════════════════════════════ */
 const CAROUSEL_PHOTOS = [
-  
   {
     src: "https://lh3.googleusercontent.com/pw/AP1GczO51uwgSKIwrc1XxRAc7qQKbmQbI-eeO15Jw1nu4Z5ez1Ow8apgYAtdnRsPFki5mUjmeX4IdfKH2WUTwVN0HE_-e-8-6ampKbarF3S7GoOlDK0DfoIfJ2Ff-FWqqlJ8oXASpjftU6c1hb4_ntIm2hfAOw=w960-h720-s-no-gm?authuser=0",  // ← Add your photo URL here
     title: "Team !dea",
@@ -977,6 +977,7 @@ const CAROUSEL_PHOTOS = [
     title: "Leadership",
     sub:   "Building what doesn't yet exist"
   },
+
 ];
 
 (function initCarousel() {
@@ -994,10 +995,24 @@ const CAROUSEL_PHOTOS = [
   let current = 0;
   let isAnimating = false;
   let autoTimer;
-  const CARD_W = 360;
-  const CARD_H = 440;
 
-  /* Build cards */
+  /* ── Per-card dimension store (set after image loads) ── */
+  const cardDims = CAROUSEL_PHOTOS.map(() => ({ w: 380, h: 500, orientation: 'portrait' }));
+
+  /* Max card dimensions by orientation */
+  const PORTRAIT_W  = 360, PORTRAIT_H  = 480;
+  const LANDSCAPE_W = 620, LANDSCAPE_H = 400;
+  const SQUARE_W    = 440, SQUARE_H    = 440;
+
+  /* ── Stage height = tallest ACTIVE card + breathing room ── */
+  function updateStageHeight() {
+    const dim = cardDims[current];
+    const activeH = dim.h;
+    /* add room for side cards which sit lower (ty=20) and shadows */
+    stage.style.height = (activeH + 80) + 'px';
+  }
+
+  /* ── Build cards ── */
   const cards = CAROUSEL_PHOTOS.map((photo, i) => {
     const card = document.createElement('div');
     card.className = 'caro-card';
@@ -1009,8 +1024,52 @@ const CAROUSEL_PHOTOS = [
       img.src = photo.src;
       img.alt = photo.title;
       img.loading = 'lazy';
+
+      /* Detect orientation once image loads */
+      img.addEventListener('load', () => {
+        const nw = img.naturalWidth;
+        const nh = img.naturalHeight;
+        const ratio = nw / nh;
+
+        let w, h, orientation;
+        if (ratio > 1.2) {
+          /* Landscape */
+          w = LANDSCAPE_W; h = LANDSCAPE_H; orientation = 'landscape';
+        } else if (ratio < 0.85) {
+          /* Portrait */
+          w = PORTRAIT_W; h = PORTRAIT_H; orientation = 'portrait';
+        } else {
+          /* Square / near-square */
+          w = SQUARE_W; h = SQUARE_H; orientation = 'square';
+        }
+
+        cardDims[i] = { w, h, orientation };
+
+        /* Resize this card if it's already placed */
+        if (card.style.width) {
+          /* Smooth resize transition */
+          card.style.transition =
+            'transform 0.9s cubic-bezier(0.16,1,0.3,1),' +
+            'opacity 0.9s cubic-bezier(0.16,1,0.3,1),' +
+            'filter 0.9s ease,' +
+            'box-shadow 0.9s ease,' +
+            'width 0.5s ease,' +
+            'height 0.5s ease';
+        }
+
+        layout(current);
+        if (i === current) updateStageHeight();
+      });
+
+      img.addEventListener('error', () => {
+        /* Fallback dims if image fails */
+        cardDims[i] = { w: PORTRAIT_W, h: PORTRAIT_H, orientation: 'portrait' };
+        layout(current);
+      });
+
       card.appendChild(img);
     } else {
+      /* Placeholder — use portrait default */
       const ph = document.createElement('div');
       ph.className = 'caro-placeholder';
       ph.innerHTML = `<div class="caro-placeholder-icon">📷</div><div class="caro-placeholder-text">Your photo here</div>`;
@@ -1051,53 +1110,49 @@ const CAROUSEL_PHOTOS = [
 
   /* ── Core 3D position layout ── */
   function layout(activeIdx) {
-    const stageW = stage.offsetWidth;
+    /* Active card dimensions drive the spacing */
+    const aDim = cardDims[activeIdx];
+    const CARD_W = aDim.w;
+    const CARD_H = aDim.h;
 
     cards.forEach((card, i) => {
-      /* relative index: 0=active, ±1=sides, ±2=far etc */
+      const dim = cardDims[i];
       let rel = i - activeIdx;
-      /* wrap around for circular feel */
-      if (rel > N/2)  rel -= N;
+      if (rel >  N/2) rel -= N;
       if (rel < -N/2) rel += N;
 
       card.dataset.rel = rel;
 
-      const absRel = Math.abs(rel);
+      /* Gap between active card edge and adjacent card centre */
+      const gap = CARD_W * 0.5 + 30;
 
-      /* ── Position parameters per depth slot ── */
       let tx, ty, tz, ry, scale, opacity, zIndex, blur;
 
       if (rel === 0) {
-        /* Centre / active */
         tx = 0; ty = 0; tz = 0; ry = 0;
         scale = 1; opacity = 1; zIndex = 10; blur = 0;
         card.classList.add('is-active');
       } else if (rel === 1) {
-        /* Right adjacent */
-        tx = CARD_W * 0.72; ty = 20; tz = -220;
-        ry = -28; scale = 0.82; opacity = 0.7; zIndex = 7; blur = 1;
+        tx = gap + dim.w * 0.32; ty = 18; tz = -200;
+        ry = -26; scale = 0.82; opacity = 0.68; zIndex = 7; blur = 1;
         card.classList.remove('is-active');
       } else if (rel === -1) {
-        /* Left adjacent */
-        tx = -CARD_W * 0.72; ty = 20; tz = -220;
-        ry = 28; scale = 0.82; opacity = 0.7; zIndex = 7; blur = 1;
+        tx = -(gap + dim.w * 0.32); ty = 18; tz = -200;
+        ry = 26; scale = 0.82; opacity = 0.68; zIndex = 7; blur = 1;
         card.classList.remove('is-active');
       } else if (rel === 2) {
-        /* Right far */
-        tx = CARD_W * 1.25; ty = 45; tz = -420;
-        ry = -42; scale = 0.62; opacity = 0.35; zIndex = 4; blur = 2;
+        tx = gap + dim.w * 0.78; ty = 40; tz = -400;
+        ry = -40; scale = 0.60; opacity = 0.30; zIndex = 4; blur = 2;
         card.classList.remove('is-active');
       } else if (rel === -2) {
-        /* Left far */
-        tx = -CARD_W * 1.25; ty = 45; tz = -420;
-        ry = 42; scale = 0.62; opacity = 0.35; zIndex = 4; blur = 2;
+        tx = -(gap + dim.w * 0.78); ty = 40; tz = -400;
+        ry = 40; scale = 0.60; opacity = 0.30; zIndex = 4; blur = 2;
         card.classList.remove('is-active');
       } else {
-        /* Hidden behind */
-        tx = rel > 0 ? CARD_W * 1.8 : -CARD_W * 1.8;
+        tx = rel > 0 ? CARD_W * 2 : -CARD_W * 2;
         ty = 80; tz = -700;
         ry = rel > 0 ? -55 : 55;
-        scale = 0.38; opacity = 0; zIndex = 1; blur = 4;
+        scale = 0.35; opacity = 0; zIndex = 1; blur = 4;
         card.classList.remove('is-active');
       }
 
@@ -1105,14 +1160,23 @@ const CAROUSEL_PHOTOS = [
         transform: translateX(${tx}px) translateY(${ty}px) translateZ(${tz}px) rotateY(${ry}deg) scale(${scale});
         opacity: ${opacity};
         z-index: ${zIndex};
-        filter: blur(${blur}px) brightness(${rel===0 ? 1 : 0.75});
+        filter: blur(${blur}px) brightness(${rel===0 ? 1 : 0.72});
         box-shadow: ${rel===0
-          ? '0 40px 80px rgba(0,0,0,.6), 0 0 0 1px rgba(13,148,136,.2), 0 0 40px rgba(13,148,136,.08)'
+          ? '0 40px 80px rgba(0,0,0,.65), 0 0 0 1px rgba(13,148,136,.2), 0 0 40px rgba(13,148,136,.09)'
           : '0 20px 40px rgba(0,0,0,.4)'};
-        width:${CARD_W}px;
-        height:${CARD_H}px;
+        width:${dim.w}px;
+        height:${dim.h}px;
+        transition:
+          transform 0.9s cubic-bezier(0.16,1,0.3,1),
+          opacity   0.9s cubic-bezier(0.16,1,0.3,1),
+          filter    0.9s ease,
+          box-shadow 0.9s ease,
+          width  0.5s ease,
+          height 0.5s ease;
       `;
     });
+
+    updateStageHeight();
   }
 
   function updateUI(idx) {
@@ -1120,7 +1184,7 @@ const CAROUSEL_PHOTOS = [
     dots.forEach((d, i) => d.classList.toggle('active', i === idx));
   }
 
-  function goTo(idx, dir) {
+  function goTo(idx) {
     if (isAnimating || idx === current) return;
     isAnimating = true;
     current = ((idx % N) + N) % N;
@@ -1130,16 +1194,14 @@ const CAROUSEL_PHOTOS = [
     resetAuto();
   }
 
-  function navigate(dir) {
-    goTo(current + dir, dir);
-  }
+  function navigate(dir) { goTo(current + dir); }
 
   function resetAuto() {
     clearInterval(autoTimer);
     autoTimer = setInterval(() => navigate(1), 4500);
   }
 
-  /* Touch / drag support */
+  /* Touch swipe */
   let touchStartX = 0;
   stage.addEventListener('touchstart', e => { touchStartX = e.touches[0].clientX; }, {passive:true});
   stage.addEventListener('touchend', e => {
@@ -1182,17 +1244,16 @@ const CAROUSEL_PHOTOS = [
 /* ACTIVE NAV */
 const secs = document.querySelectorAll('section[id]');
 const navAs = document.querySelectorAll('.nav-links a');
-new IntersectionObserver(entries=>{
-  entries.forEach(e=>{ if(e.isIntersecting) navAs.forEach(a=>{ a.style.color=a.getAttribute('href')===`#${e.target.id}`?'var(--white)':''; }); });
-},{threshold:.3}).observe.call(
-  (() => {
-    const obs = new IntersectionObserver(entries=>{
-      entries.forEach(e=>{ if(e.isIntersecting) navAs.forEach(a=>{ a.style.color=a.getAttribute('href')===`#${e.target.id}`?'var(--white)':''; }); });
-    },{threshold:.3});
-    secs.forEach(s=>obs.observe(s));
-    return obs;
-  })()
-);
+const secObs = new IntersectionObserver(entries => {
+  entries.forEach(e => {
+    if (e.isIntersecting) {
+      navAs.forEach(a => {
+        a.style.color = a.getAttribute('href') === `#${e.target.id}` ? 'var(--white)' : '';
+      });
+    }
+  });
+}, { threshold: 0.3 });
+secs.forEach(s => secObs.observe(s));
 </script>
 </body>
 </html>
